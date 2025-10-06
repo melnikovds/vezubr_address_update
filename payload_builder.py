@@ -40,11 +40,11 @@ class PointPayloadBuilder:
             "isFavorite": 0,
             "elevator": 0
         }
-    
+
     @staticmethod
-    def point_update():
+    def point_update(cur_id):
         return {
-            "id": None,
+            "id": cur_id,
             "contacts": [
                 {
                     "contact": None,

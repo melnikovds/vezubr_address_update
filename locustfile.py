@@ -10,7 +10,7 @@ import os
 # --- настройки ---
 INPUT_FILE = "addresses.json"         # файл со списком id
 OUTPUT_FILE = "updated_addresses.json"
-RATE_PER_SEC = 2                    # скорость запросов в сек
+RATE_PER_SEC = 2                    # целевая скорость запросов в секунду
 # --------------------
 
 _lock = threading.Lock()
@@ -28,7 +28,7 @@ def load_ids():
         data = json.load(f)
     if not isinstance(data, list):
         raise ValueError(f"В файле {INPUT_FILE} ожидается список id, а найдено: {type(data)}")
-    # приводим к списку целых (если строки) и фильтруем неинтовые значения
+    # приводим к списку целых и фильтруем неинтовые значения
     cleaned = []
     for item in data:
         try:
@@ -106,7 +106,6 @@ class User(HttpUser):
             if isinstance(payload, dict):
                 payload["id"] = cur_id
             else:
-                # если point_update возвращает объект — пробуем присвоить атрибут
                 try:
                     setattr(payload, "id", cur_id)
                 except Exception:

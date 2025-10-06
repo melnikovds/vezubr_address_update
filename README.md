@@ -25,3 +25,5 @@
 locust -f locustfile.py --host https://api.vezubr.com
 
 либо в режиме headless с дополнительными настройками
+
+locust -f locustfile.py --headless -u 1 -r 1
