@@ -1,0 +1,55 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.DS_Store
+
+# Logs
+*.log
+logs/
+log/
+
+# Unit test / coverage reports
+.coverage
+.htmlcov/
+.tox/
+.nox/
+coverage.xml
+pytest.xml
+.hypothesis/
+
+# PyInstaller
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyCharm
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# VS Code
+.vscode/
+
+# Reports
+reports/
+allure-results/
+allure-report/
+
+# OS generated
+Thumbs.db
+
+auth.py
+

@@ -1,5 +1,5 @@
+# locustfile.py
 from locust import HttpUser, between, task
-from typing import TextIO
 from auth import *
 from payload_builder import *
 import time
@@ -7,23 +7,44 @@ import threading
 import json
 import os
 
-# Настройки
-TARGET_TOTAL = 5000       # всего адресов
-RATE_PER_SEC = 10          # запросов в секунду
-OUTPUT_FILE = "addresses.json"
+# --- настройки ---
+INPUT_FILE = "addresses.json"         # файл со списком id
+OUTPUT_FILE = "updated_addresses.json"
+RATE_PER_SEC = 2                    # скорость запросов в сек
+# --------------------
 
-_created_count = 0
-_created_ids = []
 _lock = threading.Lock()
+_ids = []
+_index = 0            # индекс следующего id для обработки
+_updated_ids = []     # куда положим успешно обновлённые id
+_total = 0
+
+
+def load_ids():
+    global _ids, _total
+    if not os.path.exists(INPUT_FILE):
+        raise FileNotFoundError(f"Файл с id не найден: {INPUT_FILE}")
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"В файле {INPUT_FILE} ожидается список id, а найдено: {type(data)}")
+    # приводим к списку целых (если строки) и фильтруем неинтовые значения
+    cleaned = []
+    for item in data:
+        try:
+            cleaned.append(int(item))
+        except Exception:
+            # пропускаем некорректные записи
+            print(f"[warning] пропускаю некорректный id: {item}")
+    _ids = cleaned
+    _total = len(_ids)
+    print(f"[locust] загружено {_total} id из {INPUT_FILE}")
 
 
 class User(HttpUser):
-    # задаём базовый URL
     host = "https://api.vezubr.com"
-    # интервал между задачами
-    wait_time = between(0, 0)
+    wait_time = between(0, 0)  # контролим паузы вручную через time.sleep
 
-    # авторизация перед началом сессии
     def on_start(self):
         token = AuthHelper.login_as("customer")
         self.client.headers.update({
@@ -31,73 +52,88 @@ class User(HttpUser):
             "Accept": "application/json",
             "Content-Type": "application/json"
         })
-        print("[locust] авторизация выполнена")
+        # загрузим ids при старте первого пользователя
+        global _ids
+        if not _ids:
+            try:
+                load_ids()
+            except Exception as e:
+                print(f"[locust] ошибка при загрузке {INPUT_FILE}: {e}")
+                # Если не удалось загрузить — останавливаем runner
+                try:
+                    if self.environment and getattr(self.environment, "runner", None):
+                        self.environment.runner.quit()
+                except Exception:
+                    pass
 
-    # задача создания адресов
+        print("[locust] авторизация выполнена, начало обновления адресов")
+
     @task
-    def create_point(self):
-        global _created_count, _created_ids
+    def update_point(self):
+        """
+        Каждый вызов берёт следующий id из списка и отправляет запрос обновления.
+        Когда список кончается — сохраняет результат и останавливает runner.
+        """
+        global _index, _updated_ids, _ids, _total
 
-        # проверка достижения лимита
+        # резервируем следующий id
         with _lock:
-            if _created_count >= TARGET_TOTAL:
+            if _index >= _total:
+                # всё обработали — сохраняем и останавливаем
                 if not os.path.exists(OUTPUT_FILE):
                     try:
+                        # сохраняем успешно обновлённые id
                         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-                            json.dump(_created_ids, f, ensure_ascii=False, indent=2)  # type: ignore[arg-type]
-                        print(f"[locust] сохранено {_created_count} id в файл {OUTPUT_FILE}")
+                            json.dump(_updated_ids, f, ensure_ascii=False, indent=2)  # type: ignore[arg-type]
+                        print(f"[locust] сохранено {len(_updated_ids)} обновлённых id в {OUTPUT_FILE}")
                     except Exception as e:
-                        print(f"[locust] ошибка при сохранении файла: {e}")
+                        print(f"[locust] ошибка при сохранении {OUTPUT_FILE}: {e}")
 
                 try:
                     if self.environment and getattr(self.environment, "runner", None):
-                        print("[locust] останавливаю runner")
+                        print("[locust] все id обработаны — останавливаю runner")
                         self.environment.runner.quit()
                 except Exception as e:
                     print(f"[locust] не удалось корректно остановить runner: {e}")
                 return
 
-            # резервируем место для следующего запроса
-            _created_count += 1
-            current_idx = _created_count
+            cur_id = _ids[_index]
+            _index += 1
+            cur_num = _index  # 1-based номер текущего
 
-        # делаем запрос
-        payload = PointPayloadBuilder.point_create()
         try:
-            resp = self.client.post(
-                "/v1/api-ext/contractor-point/update",
-                json=payload,
-                name="/v1/api-ext/contractor-point/update"
-            )
+            payload = PointPayloadBuilder.point_update()
+            if isinstance(payload, dict):
+                payload["id"] = cur_id
+            else:
+                # если point_update возвращает объект — пробуем присвоить атрибут
+                try:
+                    setattr(payload, "id", cur_id)
+                except Exception:
+                    # на случай необычной реализации — логируем и продолжаем
+                    print(f"[locust] не удалось установить id в payload (id={cur_id}), payload type={type(payload)}")
         except Exception as e:
-            print(f"[locust] исключение при запросе ({current_idx}): {e}")
+            print(f"[locust] исключение при построении payload для id={cur_id}: {e}")
+            # чтобы не терять ход, просто ждём и возвращаемся
+            time.sleep(1.0 / RATE_PER_SEC)
+            return
+
+        # посылаем запрос
+        try:
+            resp = self.client.post("/v1/api-ext/contractor-point/update", json=payload,
+                                    name="/v1/api-ext/contractor-point/update")
+        except Exception as e:
+            print(f"[locust] исключение при запросе id={cur_id} (номер {cur_num}): {e}")
             resp = None
 
-        # парсим ответ
         if resp is not None and resp.status_code in (200, 201):
-            try:
-                j = resp.json()
-                new_id = j.get("id") if isinstance(j, dict) else None
-                if new_id is None:
-                    print(f"[locust] предупреждение: в ответе {current_idx} отсутствует поле 'id'. Ответ: {j}")
-                else:
-                    with _lock:
-                        _created_ids.append(new_id)
-            except Exception as e:
-                print(f"[locust] не удалось распарсить JSON ({current_idx}): {e}")
+            # считаем успешным
+            with _lock:
+                _updated_ids.append(cur_id)
+            print(f"[locust] OK {cur_num}/{_total} — id={cur_id} обновлён")
         else:
             code = resp.status_code if resp is not None else "нет-ответа"
-            print(f"[locust] неуспешный статус ({code}) для запроса #{current_idx}")
+            print(f"[locust] FAIL {cur_num}/{_total} — id={cur_id}, статус {code}; ответ: {getattr(resp, 'text', '')[:200]}")
 
-        # держим скорость примерно RATE_PER_SEC запросов в секунду
-        time.sleep(10.0 / RATE_PER_SEC)
-
-
-
-    # задача обновление адресов
-
-
-
-
-
-
+        # пауза между запросами, чтобы держать примерно RATE_PER_SEC req/s
+        time.sleep(1.0 / RATE_PER_SEC)
